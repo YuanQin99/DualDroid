@@ -129,7 +129,7 @@ def get_datasets(root_dir: str, batch_size=32, seed=42):
     """
 
     if not os.path.exists(root_dir):
-        raise FileNotFoundError(f"数据集目录 {root_dir} 不存在，请检查路径。")
+        raise FileNotFoundError(f"Dataset directory {root_dir} does not exist. Please check the path.")
 
     # Build opcode and permission vocabularies
     opcode_vocab = build_opcode_vocab(root_dir)
@@ -140,7 +140,7 @@ def get_datasets(root_dir: str, batch_size=32, seed=42):
     logger.info(f"{len(permission_vocab)} permissions found")
 
     if not opcode_vocab or not permission_vocab:
-        raise ValueError("Opcode 词表或 Permission 词表为空，请检查数据集。")
+        raise ValueError("Opcode vocabulary or Permission vocabulary is empty. Please check the dataset.")
 
     dataset = APKGraphDataset(root_dir=root_dir, opcode_vocab=opcode_vocab, permission_vocab=permission_vocab)
 
