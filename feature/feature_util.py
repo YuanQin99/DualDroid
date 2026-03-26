@@ -121,7 +121,7 @@ for p in paths_to_lib_type2:
 TAG_SPLITTER = "#.tag#"
 
 
-#####----START   用于提取特征     START----######
+#####----START   For feature extraction     START----######
 
 
 def get_permissions(app):
@@ -238,7 +238,7 @@ def get_hardwares(app):
 
 def get_apis(dexes, max_number_of_smali_files):
     """
-    从各个类中提取API调用序列
+    Extract API call sequences from classes.
     """
 
     apis_classwise = []
@@ -306,7 +306,7 @@ def check(method):
     return any(method in api for api in new_apis)
 
 
-#####----END   用于提取特征     END----######
+#####----END   For feature extraction     END----######
 
 
 def permission_check(permission):
@@ -359,7 +359,7 @@ def get_feature_list(feature):
             feature_type_list.append(_feature_type)
             feature_info_list.append(_feat_info)
         elif isinstance(feat, list):  # apis
-            # 该特征是一个api调用序列
+            # This feature is an API call sequence
             for api in feat:
                 feature_elements = api.split(TAG_SPLITTER)
                 _api_name = get_api_name(feature_elements[0])

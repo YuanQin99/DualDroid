@@ -18,7 +18,7 @@ from torch_geometric.data import Data
 
 import networkx as nx
 
-# ===== 项目内依赖 =====
+# ===== Project dependencies =====
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 from config.logging_config import set_logging
 from config.path_config import OUTPUT_PATH
@@ -28,7 +28,7 @@ logger = set_logging(__file__)
 
 
 # ============================================================
-# 1) 自适应的“逐图”节点+边双掩码（DualMask，结构+语义）
+# 1) Adaptive per-graph node+edge dual masking (DualMask, structure + semantics)
 # ============================================================
 @torch.no_grad()
 def mask_edges_and_nodes(
@@ -40,13 +40,13 @@ def mask_edges_and_nodes(
     protect_bridges: bool = True,
 ):
     """
-    对 PyG batched Data 进行逐图的节点+边掩码：
-      - 节点重要性 imp = 0.5*degree + 0.5*||x||
-      - 边重要性 = 两端节点重要性的均值
-      - 低重要性优先被掩码（可改为相反策略）
-      - 桥边（bridge）可选保护
-      - 负采样在每图内部进行
-    返回字段：
+        Apply per-graph node+edge masking to PyG batched `Data`:
+            - Node importance: imp = 0.5*degree + 0.5*||x||
+            - Edge importance: mean of the endpoint node importances
+            - Lower-importance items are masked first (can be reversed)
+            - Optional bridge-edge protection
+            - Negative sampling is performed within each graph
+        Returned fields:
       data.masked_edge_index, data.masked_edges, data.masked_edges_for_pred, data.masked_edge_label
       data.original_x, data.masked_x, data.masked_nodes, data.masked_nodes_for_pred, data.masked_node_label
     """
@@ -56,7 +56,7 @@ def mask_edges_and_nodes(
     batch = data.batch
     num_graphs = int(batch.max()) + 1
 
-    # 保存原特征 + 待写入的被掩码特征
+    # Save original features + masked features to be written
     data.original_x = data.x.clone()
     data.masked_x = data.x.clone()
 
@@ -65,16 +65,16 @@ def mask_edges_and_nodes(
 
     for gid in range(num_graphs):
         node_sel = batch == gid
-        nodes_global = node_sel.nonzero(as_tuple=False).view(-1)  # 获取当前图的全局节点索引（逐图在一个Batch大图中的节点索引）
+        nodes_global = node_sel.nonzero(as_tuple=False).view(-1)  # Global node indices of current graph in the batched graph
         if nodes_global.numel() == 0:
             continue
 
-        # 取该图的局部子图（节点重标号）
-        e_local, _ = subgraph(nodes_global, data.edge_index, relabel_nodes=True, num_nodes=data.num_nodes)  # 当前图边索引
-        n_local = nodes_global.size(0)  # 当前图节点数
-        x_local = data.x[nodes_global]  # 当前图节点特征
+        # Extract local subgraph for this graph (with relabeled nodes)
+        e_local, _ = subgraph(nodes_global, data.edge_index, relabel_nodes=True, num_nodes=data.num_nodes)  # Local edge indices of current graph
+        n_local = nodes_global.size(0)  # Number of nodes in current graph
+        x_local = data.x[nodes_global]  # Node features of current graph
 
-        # 结构 + 语义重要性
+        # Structural + semantic importance
         deg = torch.zeros(n_local, device=device)
         if e_local.numel() > 0:
             deg.scatter_add_(0, e_local[0], torch.ones(e_local.size(1), device=device))
@@ -83,21 +83,21 @@ def mask_edges_and_nodes(
         sem = x_local.norm(p=2, dim=1)
         sem_s = (sem - sem.min()) / (sem.max() - sem.min() + 1e-9) if sem.max() > 0 else sem
 
-        imp = 0.5 * deg_s + 0.5 * sem_s  # [0,1], 值越大越重要
+        imp = 0.5 * deg_s + 0.5 * sem_s  # [0,1], larger means more important
 
-        # 轻量数据增强：掩码比例动态扰动
+        # Lightweight augmentation: dynamic perturbation of mask ratios
         # if augment:
         #     edge_mask_ratio = edge_mask_ratio * (0.8 + 0.4 * torch.rand(1, device=device).item())
         #     node_mask_ratio = node_mask_ratio * (0.8 + 0.4 * torch.rand(1, device=device).item())
         edge_ratio = edge_mask_ratio * (0.8 + 0.4 * torch.rand(1, device=device).item()) if augment else edge_mask_ratio
         node_ratio = node_mask_ratio * (0.8 + 0.4 * torch.rand(1, device=device).item()) if augment else node_mask_ratio
 
-        # ===== 边自适应掩码 =====
+        # ===== Adaptive edge masking =====
         num_edges = e_local.size(1)
         # num_edges_to_mask = int(num_edges * edge_mask_ratio)
         num_edges_to_mask = int(num_edges * edge_ratio)
 
-        # 默认所有边可删；保护桥边可选
+        # By default all edges are removable; bridge protection is optional
         prunable = torch.ones(num_edges, dtype=torch.bool, device=device)
         if protect_bridges and num_edges > 0:
             try:
@@ -108,7 +108,7 @@ def mask_edges_and_nodes(
                     if t in bridges:
                         prunable[i] = False
             except Exception:
-                pass  # 失败则不保护
+                pass  # If failed, skip protection
 
         pr_idx = prunable.nonzero(as_tuple=False).view(-1)
         chosen_e = torch.empty((2, 0), dtype=torch.long, device=device)
@@ -116,7 +116,7 @@ def mask_edges_and_nodes(
         if num_edges_to_mask > 0 and pr_idx.numel() > 0:
             ei_imp = ((imp[e_local[0]] + imp[e_local[1]]) / 2.0)[pr_idx]
             if adaptive:
-                # 低重要性优先被mask
+                # Mask lower-importance edges first
                 probs = (1.0 - ei_imp).clamp(min=1e-9)
                 probs = probs / probs.sum()
                 pick = pr_idx[torch.multinomial(probs, num_samples=min(num_edges_to_mask, pr_idx.numel()), replacement=False)]
@@ -125,7 +125,7 @@ def mask_edges_and_nodes(
                 pick = pr_idx[perm[:num_edges_to_mask]]
             chosen_e = e_local[:, pick]
 
-        # 构造保留边
+        # Construct kept edges
         if chosen_e.size(1) == 0:
             keep_mask = torch.ones(num_edges, dtype=torch.bool, device=device)
         else:
@@ -135,7 +135,7 @@ def mask_edges_and_nodes(
 
         e_local_kept = e_local[:, keep_mask]
 
-        # 映射回全局编号
+        # Map back to global indices
         kept_global = (
             torch.stack([nodes_global[e_local_kept[0]], nodes_global[e_local_kept[1]]], dim=0)
             if e_local_kept.numel()
@@ -148,7 +148,7 @@ def mask_edges_and_nodes(
             else torch.empty((2, 0), dtype=torch.long, device=device)
         )
 
-        # 图内负采样（与正样本同数）
+        # In-graph negative sampling (same count as positive samples)
         neg_local = (
             negative_sampling(e_local, num_nodes=n_local, num_neg_samples=pos_global.size(1), method="sparse")
             if pos_global.size(1) > 0
@@ -169,7 +169,7 @@ def mask_edges_and_nodes(
         edges4pred_chunks.append(edges4pred)
         edge_label_chunks.append(edge_labels)
 
-        # ===== 节点自适应掩码 =====
+        # ===== Adaptive node masking =====
         # k_nodes = max(1, int(n_local * node_mask_ratio))
         k_nodes = max(1, int(n_local * node_ratio))
         if adaptive:
@@ -182,7 +182,7 @@ def mask_edges_and_nodes(
         chosen_nodes_global = nodes_global[chosen_nodes_local]
         masked_feats = data.x[chosen_nodes_global]
 
-        # 写mask token（零/小噪声）
+        # Write mask token (zero / small noise)
         if augment and torch.rand(1, device=device).item() < 0.3:
             data.masked_x[chosen_nodes_global] = torch.randn_like(masked_feats) * 0.1
         else:
@@ -197,7 +197,7 @@ def mask_edges_and_nodes(
         nodes4pred_chunks.append(nodes4pred)
         node_label_chunks.append(node_labels)
 
-    # 汇总回 batch
+    # Merge results back into batch
     data.masked_edge_index = torch.cat(kept_edge_chunks, dim=1) if kept_edge_chunks else data.edge_index
     data.masked_edges = torch.cat(pos_edge_chunks, dim=1) if pos_edge_chunks else torch.empty((2, 0), dtype=torch.long, device=device)
     data.masked_edges_for_pred = torch.cat(edges4pred_chunks, dim=1) if edges4pred_chunks else torch.empty((2, 0), dtype=torch.long, device=device)
@@ -212,10 +212,10 @@ def mask_edges_and_nodes(
 
 
 # ============================================================
-# 2) 模型：Encoder/Decoders/Classifier（全部采用 LayerNorm）
+# 2) Model: Encoder/Decoders/Classifier (all using LayerNorm)
 # ============================================================
 class ImprovedGNNEncoder(nn.Module):
-    """GCN backbone with LayerNorm (替换 BN，单样本推理更稳)"""
+    """GCN backbone with LayerNorm (replacing BN for more stable single-sample inference)."""
 
     def __init__(self, in_dim, hidden_dim, num_layers=4, dropout=0.1):
         super().__init__()
@@ -244,7 +244,7 @@ class ImprovedGNNEncoder(nn.Module):
 
 
 class ImprovedEdgeDecoder(nn.Module):
-    """边解码器：LayerNorm 替代 BN"""
+    """Edge decoder: LayerNorm replaces BN."""
 
     def __init__(self, hidden_dim, dropout=0.1):
         super().__init__()
@@ -268,7 +268,7 @@ class ImprovedEdgeDecoder(nn.Module):
 
 
 class ImprovedNodeDecoder(nn.Module):
-    """节点重构解码器：LayerNorm 替代 BN"""
+    """Node reconstruction decoder: LayerNorm replaces BN."""
 
     def __init__(self, hidden_dim, feature_dim, dropout=0.1):
         super().__init__()
@@ -290,7 +290,7 @@ class ImprovedNodeDecoder(nn.Module):
 
 
 class ImprovedNodeSimilarityDecoder(nn.Module):
-    """节点语义相似性判别器：LayerNorm 替代 BN"""
+    """Node semantic similarity discriminator: LayerNorm replaces BN."""
 
     def __init__(self, feature_dim, dropout=0.1):
         super().__init__()
@@ -305,7 +305,7 @@ class ImprovedNodeSimilarityDecoder(nn.Module):
         )
 
     def forward(self, anchor_feat, candidate_feats):
-        # anchor_feat: (F,) 或 (F)；candidate_feats: (K, F)
+        # anchor_feat: (F,) or scalar-like (F); candidate_feats: (K, F)
         if candidate_feats.numel() == 0:
             return torch.empty(0, device=candidate_feats.device)
         if anchor_feat.dim() == 1:
@@ -317,7 +317,7 @@ class ImprovedNodeSimilarityDecoder(nn.Module):
 
 
 class SuperEnhancedGraphClassifier(nn.Module):
-    """Encoder + (可选)GAT + 多池化 + 分类头（LayerNorm 版）"""
+    """Encoder + (optional) GAT + multi-pooling + classification head (LayerNorm version)."""
 
     def __init__(self, encoder, hidden_dim, num_classes, num_heads=4, dropout_rate=0.15, use_gat=True, pooling_method="multi"):
         super().__init__()
@@ -409,7 +409,7 @@ class SuperEnhancedGraphClassifier(nn.Module):
 
 
 # ============================================================
-# 3) 训练循环（预训练：边/节点重构 + 语义一致；微调分类）
+# 3) Training loops (pretraining: edge/node reconstruction + semantic consistency; then classification finetuning)
 # ============================================================
 def train_edge_and_node_pred_improved(
     encoder, edge_decoder, node_decoder, node_similarity_decoder, loader, optimizer, device, edge_mask_ratio, node_mask_ratio, epoch
@@ -424,7 +424,7 @@ def train_edge_and_node_pred_improved(
     total_node_sim_loss = 0.0
     total_loss = 0.0
 
-    # 动态权重
+    # Dynamic weights
     edge_w = 1.0
     node_rec_w = 1.0
     node_sim_w = 0.5 + 0.5 * min(epoch / 20.0, 1.0)
@@ -444,19 +444,19 @@ def train_edge_and_node_pred_improved(
         node_rec_loss = torch.tensor(0.0, device=device)
         node_sim_loss = torch.tensor(0.0, device=device)
 
-        # 边预测（二分类）
+        # Edge prediction (binary classification)
         if data.masked_edges_for_pred.numel() > 0:
             edge_pred = edge_decoder(node_emb, data.masked_edges_for_pred)
             edge_loss = F.binary_cross_entropy_with_logits(edge_pred, data.masked_edge_label)
             loss = loss + edge_w * edge_loss
 
-        # 节点重构 + 相似性
+        # Node reconstruction + similarity
         if data.masked_nodes.numel() > 0:
             recon = node_decoder(node_emb[data.masked_nodes])
             node_rec_loss = F.mse_loss(recon, data.masked_node_features)
             loss = loss + node_rec_w * node_rec_loss
 
-            # 语义一致性：用平均重构作为 anchor
+            # Semantic consistency: use mean reconstruction as anchor
             if recon.size(0) > 1:
                 anchor = recon.mean(dim=0)
             else:
@@ -499,7 +499,7 @@ def train_cls_improved(model, loader, optimizer, device, epoch=None):
         data = data.to(device)
         out = model(data.x, data.edge_index, data.batch)
 
-        # 标签平滑
+        # Label smoothing
         smoothing = 0.1
         confidence = 1.0 - smoothing
         num_classes = out.size(-1)
@@ -574,14 +574,14 @@ def test_cls(model, loader, device):
 
 
 # ============================================================
-# 4) 主流程
+# 4) Main pipeline
 # ============================================================
 def main():
     from core.utils import set_seed
 
     set_seed(42)
 
-    # ---------- 超参数 ----------
+    # ---------- Hyperparameters ----------
     root_dir = OUTPUT_PATH 
     batch_size = 48
     hidden_dim = 160
@@ -597,11 +597,11 @@ def main():
     num_heads = 4
     use_gat = True
 
-    # 训练轮次（也可从命令行读）
+    # Number of training epochs (can also be read from CLI)
     train_edge_epochs = int(sys.argv[1]) if len(sys.argv) > 1 else 30
     train_cls_epochs = int(sys.argv[2]) if len(sys.argv) > 2 else 50
 
-    # 学习率
+    # Learning rates
     train_pretrain_lr = 8e-4
     train_pretrain_weight_decay = 5e-6
 
@@ -614,11 +614,11 @@ def main():
     finetune_lr = 5e-6
     finetune_weight_decay = 1e-6
 
-    # ---------- 数据 ----------
+    # ---------- Data ----------
     train_loader, val_loader, test_loader = get_datasets(root_dir, batch_size, seed=30)
     input_dim = train_loader.dataset[0].x.size(1)
 
-    # ---------- 自监督预训练 ----------
+    # ---------- Self-supervised pretraining ----------
     encoder = ImprovedGNNEncoder(input_dim, hidden_dim, num_layers=4, dropout=0.1).to(device)
     edge_decoder = ImprovedEdgeDecoder(hidden_dim, dropout=0.1).to(device)
     node_decoder = ImprovedNodeDecoder(hidden_dim, input_dim, dropout=0.1).to(device)
@@ -652,7 +652,7 @@ def main():
             f"LR: {scheduler_pretrain.get_last_lr()[0]:.6f}"
         )
 
-    # ---------- 分类微调 ----------
+    # ---------- Classification finetuning ----------
     logger.info("==== Graph classification finetune ====")
     model = SuperEnhancedGraphClassifier(encoder, hidden_dim, num_classes, num_heads, dropout, use_gat, pooling_method="multi").to(device)
 
@@ -700,14 +700,14 @@ def main():
             logger.info(f"Early stopping after {patience} epochs with no improvement.")
             break
 
-        # 过拟合预警
+        # Overfitting warning
         if (train_acc - val_acc) > 0.04:
             logger.warning(f"⚠️ Potential overfitting: gap={train_acc - val_acc:.4f}")
 
     logger.info(f"Finetuning finished. Best Val Acc: {best_val_acc:.4f}")
     model.load_state_dict(torch.load(best_model_path, weights_only=True, map_location=device))
 
-    # ---------- 测试 ----------
+    # ---------- Testing ----------
     test_cls(model, test_loader, device)
 
 

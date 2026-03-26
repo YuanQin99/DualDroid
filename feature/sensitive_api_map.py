@@ -1,7 +1,7 @@
 import os
 from os import path
 
-# Drebin论文提供
+# Provided by the Drebin paper
 DANGEROUS_API_SIMLI_TAGS_PERMISSIONS = {
     "Landroid/content/Intent;->setDataAndType": [],
     "Landroid/content/Intent;->setFlags": [],
@@ -109,7 +109,7 @@ def generate_sensitive_api():
     """
     Generate sensitive API features.
     """
-    # 这些敏感API是从Axplorer的权限映射文件中提取的
+    # These sensitive APIs are extracted from Axplorer permission mapping files
     dir_path = path.dirname(path.realpath(__file__))
     dir_to_axplorer_permissions_mp = path.join(dir_path + "/res/permissions/")
     txt_file_paths = list(retrive_files_set(dir_to_axplorer_permissions_mp, "", "txt"))

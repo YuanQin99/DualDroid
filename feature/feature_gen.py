@@ -7,8 +7,8 @@ from feature.feature_util import get_permissions, get_components, get_providers,
 import sys
 from loguru import logger
 
-logger.remove()  # 移除所有 handler
-logger.add(sys.stderr, level="ERROR")  # 添加你想要的级别
+logger.remove()  # Remove all handlers
+logger.add(sys.stderr, level="ERROR")  # Add the desired log level
 
 
 def apk2feat_wrapper(kwargs):
@@ -20,16 +20,19 @@ def apk2feat_wrapper(kwargs):
 
 def apk2features(apk_path, max_number_of_smali_files=10000, saving_path=None):
     """
-    提取 APK 的特征，包括危险权限、可疑的 Intent 动作、受限 API 和危险 API。
+    Extract APK features, including dangerous permissions,
+    suspicious intent actions, restricted APIs, and dangerous APIs.
 
-    每个权限: Android 权限。
-    每个 Intent 动作: intent action + '#.tag.#' + 该 Intent 的相关信息。
-    每个 API: 调用类型 + ' ' + 类名 + '->' + 方法名 + 参数 + 返回类型 + '#.tag.#' + 类名和方法定义路径的相关信息。
-    参数说明:
+    Each permission: Android permission.
+    Each intent action: intent action + '#.tag.#' + related information of that intent.
+    Each API: invoke type + ' ' + class name + '->' + method name +
+    parameters + return type + '#.tag.#' + related information of the
+    class name and method definition path.
+    Parameters:
 
-    apk_path: 字符串类型，指向 APK 文件的路径，否则会引发错误。
-    max_number_of_smali_files: 整数类型，表示 smali 文件的最大数量。
-    saving_path: 字符串类型，指向保存路径的路径。
+    apk_path: String path to the APK file, otherwise an error is raised.
+    max_number_of_smali_files: Integer, maximum number of smali files.
+    saving_path: String path to where results are saved.
     """
 
     if not isinstance(apk_path, str):
@@ -46,7 +49,7 @@ def apk2features(apk_path, max_number_of_smali_files=10000, saving_path=None):
     except Exception as e:
         raise ValueError("Fail to read and analyze the apk {}:{} ".format(apk_path, str(e)))
 
-    # ------------- 开始提取各种特征 -------------------#
+    # ------------- Start extracting all feature types -------------------#
     # 1. get permissions
     try:
         permission_list = get_permissions(a)
@@ -82,7 +85,7 @@ def apk2features(apk_path, max_number_of_smali_files=10000, saving_path=None):
         api_sequences = get_apis(d, max_number_of_smali_files)
     except Exception as e:
         raise ValueError("Fail to extract apis {}:{} ".format(apk_path, str(e)))
-    # ---------------- 结束提取各种特征 -----------------#
+    # ---------------- Finish extracting all feature types -----------------#
 
     # features = []
     # features.extend(permission_list + component_list + provider_list + intent_actions + hardware_list)

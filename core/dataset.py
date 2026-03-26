@@ -1,119 +1,120 @@
-# python 库
+# Python libraries
 import torch
 from torch.utils.data import random_split
 from torch_geometric.data import Dataset, Data
 from torch_geometric.loader import DataLoader
 import os
 
-# 自定义
+# Local imports
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from core.utils import load_features, build_opcode_vocab, build_permission_vocab
 from config.logging_config import set_logging
 
-# 设置日志记录
+# Configure logging
 logger = set_logging(__file__)
 
 
-# Dataset 类
+# Dataset class
 class APKGraphDataset(Dataset):
     """
-    一个用于读取 .pkl 格式调用图数据的 PyG Dataset
-    目录结构:
+        A PyG Dataset for loading call-graph data in `.pkl` format.
+        Directory structure:
       root_dir/
         malicious/*.pkl
         benign/*.pkl
-    所有扫描、特征生成和 Data 创建都在 load_data() 中执行，
-    并将生成的 Data 对象缓存至内存以加速索引。
+        All scanning, feature construction, and `Data` object creation
+        are done in `load_data()`, and created `Data` objects are cached
+        in memory to speed up indexing.
     """
 
     def __init__(self, root_dir: str, opcode_vocab: dict, permission_vocab: dict, transform=None, pre_transform=None):
-        # 调用父类构造函数，root_dir 由父类赋给 self.root
+        # Call parent constructor; `root_dir` will be assigned to `self.root`
         super().__init__(root=root_dir, transform=transform, pre_transform=pre_transform)
-        # 保存 opcode 与 permission 词表
+        # Store opcode and permission vocabularies
         self.opcode_vocab = opcode_vocab
         self.permission_vocab = permission_vocab
-        # 预先加载并处理所有样本，结果缓存到列表中
+        # Preload and process all samples, then cache into a list
         self.cache_path = os.path.join(self.root, "data.pkl")
         self.data_list = self.load_data()
 
     def len(self):
-        # 返回图的总数
+        # Return total number of graphs
         return len(self.data_list)
 
     def get(self, idx):
-        # 根据索引返回对应的 Data 对象
+        # Return the corresponding `Data` object by index
         return self.data_list[idx]
 
     def load_data(self):
         """
-        扫描 root 目录下的 .pkl 文件，
-        构造 PyG Data 对象并返回列表
+        Scan `.pkl` files under the root directory,
+        build PyG `Data` objects, and return them as a list.
         """
-        # 如果缓存文件存在，直接加载
+        # Load directly if cache file exists
         if os.path.exists(self.cache_path):
             logger.info(f"Loading cached data from {self.cache_path}")
             return torch.load(self.cache_path, weights_only=False)
 
         data_list = []
-        # 分别处理恶意和良性样本
+        # Process malicious and benign samples separately
         for label_str, lbl in (("malicious", 1), ("benign", 0)):
             folder = os.path.join(self.root, label_str)
             if not os.path.isdir(folder):
                 continue
             for fn in os.listdir(folder):
-                # 仅处理 .pkl 文件
+                # Only process `.pkl` files
                 if not fn.endswith(".pkl"):
                     continue
 
                 path = os.path.join(folder, fn)
-                # 加载特征字典
+                # Load feature dictionary
                 features = load_features(path)
                 cg = features.get("call_graph", {})
                 nodes = cg.get("nodes", [])
-                # 跳过节点数小于等于1的图
+                # Skip graphs with <= 1 node
                 if len(nodes) <= 1:
                     continue
 
                 num_nodes = len(nodes)
-                # 特征维度 = opcode 词表长度 + permission 词表长度 + 1（is_sensitive）
+                # Feature dim = opcode vocab size + permission vocab size + 1 (`is_sensitive`)
                 feat_dim = len(self.opcode_vocab) + len(self.permission_vocab) + 1
-                # 初始化节点特征矩阵 [num_nodes, feat_dim]
+                # Initialize node feature matrix [num_nodes, feat_dim]
                 x = torch.zeros((num_nodes, feat_dim), dtype=torch.float)
 
-                # 构建节点ID到索引的映射
+                # Build mapping from node ID to index
                 id_map = {}
                 for i, (nid, attrs) in enumerate(nodes):
                     id_map[nid] = i
-                    # opcode 独热编码
+                    # One-hot encode opcodes
                     for op in attrs.get("opcodes", []):
                         idx = self.opcode_vocab.get(op)
                         if idx is not None:
                             x[i, idx] = 1.0
-                    # permission 独热编码，偏移到词表后面
+                    # One-hot encode permissions, offset after opcode vocab
                     base = len(self.opcode_vocab)
                     for per in attrs.get("permissions", []):
                         pidx = self.permission_vocab.get(per)
                         if pidx is not None:
                             x[i, base + pidx] = 1.0
-                    # is_sensitive 标志位
+                    # `is_sensitive` flag
                     x[i, -1] = 1.0 if attrs.get("is_sensitive", False) else 0.0
 
-                # 构建 edge_index 张量
+                # Build `edge_index` tensor
                 edges = cg.get("edges", [])
                 edge_indices = [(id_map[src], id_map[dst]) for src, dst in edges if src in id_map and dst in id_map]
-                # 如果没有边，可选择跳过
+                # Skip graph if there are no edges
                 if len(edge_indices) == 0:
                     continue
                 edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
 
-                # 图级标签 y
+                # Graph-level label `y`
                 y = torch.tensor([lbl], dtype=torch.long)
 
-                # 构造并添加 Data 对象
+                # Build and append `Data` object
                 data_list.append(Data(x=x, edge_index=edge_index, y=y))
 
-        # 保存缓存文件
+        # Save cache file
         torch.save(data_list, self.cache_path)
         logger.info(f"[INFO] Data cached at {self.cache_path}")
         return data_list
@@ -121,16 +122,16 @@ class APKGraphDataset(Dataset):
 
 def get_datasets(root_dir: str, batch_size=32, seed=42):
     """
-    获取 APKGraphDataset 实例, 并划分为训练集、验证集和测试集
-    :param root_dir: 数据集根目录
-    :param batch_size: DataLoader 的批大小
-    :return: 训练集、验证集和测试集的 DataLoader
+    Get an `APKGraphDataset` instance and split it into train/val/test sets.
+    :param root_dir: Dataset root directory
+    :param batch_size: Batch size for `DataLoader`
+    :return: Train/validation/test `DataLoader`s
     """
 
     if not os.path.exists(root_dir):
         raise FileNotFoundError(f"数据集目录 {root_dir} 不存在，请检查路径。")
 
-    # 构建 opcode 和 permission 词表
+    # Build opcode and permission vocabularies
     opcode_vocab = build_opcode_vocab(root_dir)
     permission_vocab = build_permission_vocab(root_dir)
 
@@ -143,25 +144,25 @@ def get_datasets(root_dir: str, batch_size=32, seed=42):
 
     dataset = APKGraphDataset(root_dir=root_dir, opcode_vocab=opcode_vocab, permission_vocab=permission_vocab)
 
-    # 数据集划分比例
-    train_ratio = 0.7  # 训练集比例
-    val_ratio = 0.15  # 验证集比例
+    # Dataset split ratios
+    train_ratio = 0.7  # Training split ratio
+    val_ratio = 0.15  # Validation split ratio
 
-    # 样本总数
+    # Total number of samples
     num_samples = len(dataset)
 
-    # 计算训练、验证和测试集大小
+    # Compute train/val/test sizes
     train_size = int(train_ratio * num_samples)
     val_size = int(val_ratio * num_samples)
-    test_size = num_samples - train_size - val_size  # 剩余部分分配给测试集
+    test_size = num_samples - train_size - val_size  # Remaining part goes to test set
 
-    # 使用 random_split 按比例划分数据集
-    # 每次运行随机划分，结果不同
+    # Use `random_split` to split dataset by ratio
+    # Random split each run; results can vary
     # train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
-    # 保证实验可重复，结果稳定
+    # Ensure reproducibility with a fixed random seed
     train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size], generator=torch.Generator().manual_seed(seed))
 
-    # 创建 DataLoader
+    # Create DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator().manual_seed(seed))
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
